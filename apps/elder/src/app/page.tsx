@@ -13,6 +13,7 @@ const API_BASE = `${API_ORIGIN}/api`;
 type ActivePanel = "home" | "chat" | "personas" | "time" | "weather" | "news";
 type ConsentMode = "private" | "care";
 type EmergencyState = "idle" | "confirming" | "submitting" | "sent" | "error";
+type AvatarState = "idle" | "listening" | "thinking" | "speaking";
 type ChatMessage = { id: string; role: "user" | "assistant"; content: string; at: Date | null };
 type Weather = {
   location: string;
@@ -40,6 +41,18 @@ const DEFAULT_PERSONA: Persona = {
   style: "自然、克制、尊重长者；先听准确，再决定是否给一步办法",
   scenarios: [],
   knowledge: ""
+};
+const AVATAR_MEDIA: Record<AvatarState, string> = {
+  idle: "/digital-human/idle.mp4",
+  listening: "/digital-human/listening.mp4",
+  thinking: "/digital-human/thinking.mp4",
+  speaking: "/digital-human/speaking.mp4"
+};
+const AVATAR_LABELS: Record<AvatarState, string> = {
+  idle: "在这里陪着您",
+  listening: "正在听您说",
+  thinking: "正在想怎么回应",
+  speaking: "正在回应您"
 };
 type ServerEvent = {
   type: string;
@@ -92,6 +105,7 @@ export default function ElderCompanionPage() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("遥遥正在回复");
+  const [avatarState, setAvatarState] = useState<AvatarState>("idle");
   const [personas, setPersonas] = useState<Persona[]>([DEFAULT_PERSONA]);
   const [personasLoaded, setPersonasLoaded] = useState(false);
   const [selectedPersonaId, setSelectedPersonaId] = useState(DEFAULT_PERSONA.id);
@@ -253,9 +267,11 @@ export default function ElderCompanionPage() {
               hasSentMessageRef.current = true;
               setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: pending, at: new Date() }]);
               setBusy(true);
+              setAvatarState("thinking");
               socket.send(JSON.stringify({ type: "message", text: pending, knowledge: relevantKnowledge(selectedPersona, pending) }));
             }
           } else if (update.type === "progress") {
+            setAvatarState("thinking");
             const labels: Record<string, string> = {
               time: "正在读取时间",
               weather: "正在查看天气",
@@ -266,6 +282,7 @@ export default function ElderCompanionPage() {
             if (update.kind === "weather") setWeather(update.data as Weather);
             if (update.kind === "news") setNews((update.data as { items: NewsItem[] }).items ?? []);
           } else if (update.type === "delta" && update.text) {
+            setAvatarState("speaking");
             let assistantId = assistantIdRef.current;
             if (!assistantId) {
               assistantId = crypto.randomUUID();
@@ -277,11 +294,13 @@ export default function ElderCompanionPage() {
           } else if (update.type === "done") {
             assistantIdRef.current = null;
             setBusy(false);
+            setAvatarState("idle");
             setProgress(`${selectedPersona.name}正在回复`);
           } else if (update.type === "error") {
             setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", content: update.message ?? "刚才没有接住，请再说一次。", at: new Date() }]);
             assistantIdRef.current = null;
             setBusy(false);
+            setAvatarState("idle");
           }
         };
         socket.onclose = (event) => {
@@ -293,6 +312,7 @@ export default function ElderCompanionPage() {
             }
             setStatus("暂时离线");
             setBusy(false);
+            setAvatarState("idle");
             assistantIdRef.current = null;
           }
         };
@@ -320,6 +340,7 @@ export default function ElderCompanionPage() {
     setSelectedPersonaId(nextPersona.id);
     setStatus("正在连接");
     setProgress(`${nextPersona.name}正在回复`);
+    setAvatarState("idle");
     setMessages([{ id: "welcome", role: "assistant", content: `${nextPersona.name}在呢。您慢慢说。`, at: null }]);
     setConnectionAttempt((value) => value + 1);
   }
@@ -345,6 +366,7 @@ export default function ElderCompanionPage() {
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: text, at: new Date() }]);
     setInput("");
     setBusy(true);
+    setAvatarState("thinking");
     hasSentMessageRef.current = true;
     assistantIdRef.current = null;
     socketRef.current.send(JSON.stringify({ type: "message", text, knowledge: relevantKnowledge(selectedPersona, text) }));
@@ -429,6 +451,7 @@ export default function ElderCompanionPage() {
     setActivePanel("home");
     setStatus("正在连接");
     setBusy(false);
+    setAvatarState("idle");
     setInput("");
     setEmergencyState("idle");
     setEmergencyMessage("");
@@ -534,34 +557,65 @@ export default function ElderCompanionPage() {
 
           {activePanel === "chat" && (
             <div className="chat-layout">
-              <div className="messages" aria-live="polite">
-                {messages.map((message) => (
-                  <article className={`message message-${message.role}`} key={message.id}>
-                    <div>{message.content.split("\n").filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}</div>
-                    <time>{message.at ? displayTime(message.at) : "刚刚"}</time>
-                  </article>
-                ))}
-                {busy && <div className="thinking" role="status">{progress}</div>}
-                <div ref={bottomRef} />
+              <aside className="avatar-panel" aria-label={`${selectedPersona.name}的数字人形象`}>
+                <div className="avatar-heading">
+                  <div><small>当前陪伴者</small><strong>{selectedPersona.name}</strong></div>
+                  <span className={`avatar-status avatar-status-${avatarState}`}>{AVATAR_LABELS[avatarState]}</span>
+                </div>
+                <div className="avatar-stage" data-state={avatarState}>
+                  <video
+                    key={AVATAR_MEDIA[avatarState]}
+                    className="avatar-video"
+                    src={AVATAR_MEDIA[avatarState]}
+                    poster="/digital-human/poster.jpg"
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    aria-label={`${selectedPersona.name}${AVATAR_LABELS[avatarState]}`}
+                  />
+                  <div className="avatar-caption" aria-live="polite">
+                    <i aria-hidden="true" />
+                    <span>{AVATAR_LABELS[avatarState]}</span>
+                  </div>
+                </div>
+                <p className="avatar-note">形象会随聆听、思考和回应自动切换。</p>
+              </aside>
+              <div className="chat-conversation">
+                <div className="messages" aria-live="polite">
+                  {messages.map((message) => (
+                    <article className={`message message-${message.role}`} key={message.id}>
+                      <div>{message.content.split("\n").filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}</div>
+                      <time>{message.at ? displayTime(message.at) : "刚刚"}</time>
+                    </article>
+                  ))}
+                  {busy && <div className="thinking" role="status">{progress}</div>}
+                  <div ref={bottomRef} />
+                </div>
+                <form className="composer" onSubmit={sendMessage}>
+                  <textarea
+                    value={input}
+                    onChange={(event) => {
+                      setInput(event.target.value);
+                      if (!busy) setAvatarState(event.target.value.trim() ? "listening" : "idle");
+                    }}
+                    onFocus={() => { if (!busy) setAvatarState(input.trim() ? "listening" : "idle"); }}
+                    onBlur={() => { if (!busy) setAvatarState("idle"); }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    rows={1}
+                    maxLength={8000}
+                    placeholder="点这里输入想说的话"
+                    aria-label="输入消息"
+                    disabled={busy}
+                  />
+                  <button type="submit" disabled={busy || status !== "可以使用"}>发送</button>
+                </form>
               </div>
-              <form className="composer" onSubmit={sendMessage}>
-                <textarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  rows={1}
-                  maxLength={8000}
-                  placeholder="点这里输入想说的话"
-                  aria-label="输入消息"
-                  disabled={busy}
-                />
-                <button type="submit" disabled={busy || status !== "可以使用"}>发送</button>
-              </form>
             </div>
           )}
 
